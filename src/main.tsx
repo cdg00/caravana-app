@@ -27,7 +27,6 @@ import {
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { jsPDF } from 'jspdf';
-import autoTable from 'jspdf-autotable';
 
 // Definición interna de tipos para evitar dependencias externas que rompan Vercel
 export type Category = 'Vaca' | 'Vaquillona' | 'Novillo' | 'Toro' | 'Ternero';
