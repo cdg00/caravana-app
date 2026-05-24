@@ -1,0 +1,286 @@
+/**
+ * @license
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+import React, { useState, useEffect, useMemo } from 'react';
+import { 
+  Bluetooth, 
+  BluetoothOff, 
+  Search, 
+  Save, 
+  AlertCircle, 
+  Trash2, 
+  Download, 
+  History, 
+  Scan,
+  Database,
+  ChevronRight,
+  User,
+  Activity,
+  Weight,
+  Clock,
+  ArrowRightLeft,
+  FileText,
+  FileCode,
+  X
+} from 'lucide-react';
+import { motion, AnimatePresence } from 'motion/react';
+import { jsPDF } from 'jspdf';
+import autoTable from 'jspdf-autotable';
+import { AnimalReading, Category, ConnectionStatus } from './types';
+
+// ==========================================
+// FUNCIONES DE SEGURIDAD (COMPLEMENTOS NUEVOS)
+// ==========================================
+
+// 1. Limpieza de textos básicos (Evita ejecución de código oculto o XSS)
+const sanitizeText = (text: string): string => {
+  if (!text) return '';
+  return text
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#x27;')
+    .replace(/\//g, '&#x2F;');
+};
+
+// 2. Limpieza para exportación en Excel (Evita que inyecten fórmulas dañinas)
+const sanitizeForCSV = (text: string): string => {
+  if (!text) return '';
+  let clean = text.trim();
+  // Si empieza con caracteres de fórmulas (+, -, =, @), les agregamos una comilla simple al frente
+  if (['=', '+', '-', '@'].includes(clean.charAt(0))) {
+    clean = `'${clean}`;
+  }
+  return clean.replace(/"/g, '""'); // Escapar comillas dobles internas
+};
+
+// Mock function to generate a random animal reading
+const generateMockReading = (tagPrefix: string): AnimalReading => {
+  const categories: Category[] = ['Vaca', 'Vaquillona', 'Novillo', 'Toro', 'Ternero'];
+  const breeds = ['Angus', 'Hereford', 'Brangus', 'Braford', 'Criollo'];
+  const status = ['Vacía', 'Preñada (4 meses)', 'Preñada (6 meses)', 'En celo', 'N/A'];
+  
+  // CORRECCIÓN DE SEGURIDAD: Usar identificadores criptográficos en vez de Math.random()
+  const id = window.crypto?.randomUUID ? window.crypto.randomUUID() : Math.random().toString(36).substring(2, 15);
+  const tagNumber = `${tagPrefix}-${Math.floor(1000 + Math.random() * 9000)}`;
+  
+  return {
+    id,
+    timestamp: new Date(),
+    tagNumber,
+    rfidCode: `RFID-${Math.random().toString(16).toUpperCase().substring(2, 10)}`,
+    breed: breeds[Math.floor(Math.random() * breeds.length)],
+    category: categories[Math.floor(Math.random() * categories.length)],
+    age: `${Math.floor(1 + Math.random() * 8)} años`,
+    reproductionStatus: status[Math.floor(Math.random() * status.length)],
+    bodyCondition: Math.floor(1 + Math.random() * 5),
+    weight: Math.floor(150 + Math.random() * 500),
+    alerts: Math.random() > 0.7 ?
+      ['Requiere vacunación aftosa', 'Tratamiento activo garrapaticida'] : []
+  };
+};
+
+export default function App() {
+  const [connectionStatus, setConnectionStatus] = useState<ConnectionStatus>('disconnected');
+  const [activeTab, setActiveTab] = useState<'reading' | 'history'>('reading');
+  const [currentReading, setCurrentReading] = useState<AnimalReading | null>(null);
+  const [history, setHistory] = useState<AnimalReading[]>([]);
+  const [isNoteModalOpen, setIsNoteModalOpen] = useState(false);
+  const [noteText, setNoteText] = useState('');
+
+  // CORRECCIÓN DE SEGURIDAD: Validación estricta antes de guardar alertas manuales
+  const addNote = () => {
+    const trimmed = noteText.trim();
+    if (!trimmed) return;
+
+    // Control de tamaño para evitar colapsar la memoria (Límite prudente)
+    if (trimmed.length > 200) {
+      alert("La alerta ingresada es demasiado larga (máximo 200 caracteres).");
+      return;
+    }
+
+    if (currentReading) {
+      // Guardamos la alerta completamente limpia de código malicioso
+      const safeNote = sanitizeText(trimmed);
+      setCurrentReading({
+        ...currentReading,
+        alerts: [...currentReading.alerts, safeNote]
+      });
+      setNoteText('');
+      setIsNoteModalOpen(false);
+    }
+  };
+
+  // Toggle Bluetooth Connection
+  const handleConnectionToggle = () => {
+    if (connectionStatus === 'connected') {
+      setConnectionStatus('disconnected');
+      setCurrentReading(null);
+    } else if (connectionStatus === 'disconnected') {
+      setConnectionStatus('connecting');
+      setTimeout(() => {
+        setConnectionStatus('connected');
+      }, 1500);
+    }
+  };
+
+  // Simulate a tag scan
+  const simulateScan = () => {
+    if (connectionStatus !== 'connected') return;
+    const newReading = generateMockReading('AR');
+    setCurrentReading(newReading);
+  };
+
+  const saveReading = () => {
+    if (currentReading) {
+      setHistory(prev => [currentReading, ...prev]);
+      setCurrentReading(null);
+    }
+  };
+
+  const discardReading = () => {
+    setCurrentReading(null);
+  };
+
+  const deleteFromHistory = (id: string) => {
+    setHistory(prev => prev.filter(a => a.id !== id));
+  };
+
+  // CORRECCIÓN DE SEGURIDAD: Convertir datos a cadenas limpias antes de renderizar el PDF
+  const exportToPDF = () => {
+    if (history.length === 0) return;
+    
+    const doc = new jsPDF();
+    
+    // Header
+    doc.setFontSize(22);
+    doc.setTextColor(46, 125, 50); 
+    doc.text('CaravanaTrack Report', 14, 22);
+    
+    doc.setFontSize(10);
+    doc.setTextColor(100);
+    doc.text(`Fecha del Reporte: ${new Date().toLocaleDateString()} ${new Date().toLocaleTimeString()}`, 14, 30);
+    doc.text(`Total de animales: ${history.length}`, 14, 35);
+    
+    // Convertir la información asegurándonos de que viaje solo como texto plano limpio
+    const tableData = history.map((a, index) => [
+      index + 1,
+      sanitizeText(a.tagNumber),
+      sanitizeText(a.category),
+      sanitizeText(a.breed),
+      `${a.weight}kg`,
+      sanitizeText(a.reproductionStatus),
+      a.alerts.map(sanitizeText).join(', ') || '-'
+    ]);
+
+    autoTable(doc, {
+      startY: 45,
+      head: [['#', 'Caravana', 'Categoría', 'Raza', 'Peso', 'Estado', 'Alertas']],
+      body: tableData,
+      theme: 'striped',
+      headStyles: { fillColor: [46, 125, 50] },
+      styles: { fontSize: 8 },
+    });
+
+    doc.save(`CaravanaTrack_Reporte_${new Date().toISOString().split('T')[0]}.pdf`);
+  };
+
+  // CORRECCIÓN DE SEGURIDAD: Blindar celdas del archivo CSV contra secuestros de Excel
+  const exportToCSV = () => {
+    if (history.length === 0) return;
+    
+    const headers = ['URL_ID', 'Timestamp', 'Tag', 'RFID', 'Breed', 'Category', 'Age', 'Reproduction', 'BCS', 'Weight', 'Alerts'];
+    
+    const rows = history.map(a => [
+      sanitizeForCSV(a.id),
+      sanitizeForCSV(a.timestamp.toISOString()),
+      sanitizeForCSV(a.tagNumber),
+      sanitizeForCSV(a.rfidCode),
+      sanitizeForCSV(a.breed),
+      sanitizeForCSV(a.category),
+      sanitizeForCSV(a.age),
+      sanitizeForCSV(a.reproductionStatus),
+      sanitizeForCSV(a.bodyCondition.toString()),
+      sanitizeForCSV(a.weight.toString()),
+      sanitizeForCSV(a.alerts.join(' | '))
+    ]);
+
+    // Unir usando comillas dobles alrededor de cada celda para asegurar la estructura
+    const csvContent = [headers, ...rows].map(e => e.map(cell => `"${cell}"`).join(",")).join("\n");
+    
+    // Forzar la lectura correcta agregando el identificador UTF-8 BOM (\uFEFF)
+    const blob = new Blob(["\uFEFF" + csvContent], { type: 'text/csv;charset=utf-8;' });
+    const link = document.createElement("a");
+    const url = URL.createObjectURL(blob);
+    link.setAttribute("href", url);
+    link.setAttribute("download", `CaravanaTrack_Lote_${new Date().toISOString().split('T')[0]}.csv`);
+    link.style.visibility = 'hidden';
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  };
+
+  return (
+    <div className="flex flex-col h-screen max-w-md mx-auto bg-gray-50 overflow-hidden border-x border-gray-200 shadow-xl">
+      {/* 1. Connection Status Bar */}
+      <header className="bg-white px-4 py-3 border-b border-gray-200 sticky top-0 z-40">
+        <div className="flex items-center justify-between mb-2">
+          <div className="flex items-center gap-3">
+            <div className="w-10 h-10 bg-green-700 rounded-xl flex items-center justify-center shadow-lg shadow-green-700/20">
+              <div className="relative">
+                <Activity size={20} className="text-white absolute -top-1 -left-1 opacity-50" />
+                <Scan size={22} className="text-white relative z-10" strokeWidth={3} />
+              </div>
+            </div>
+            <div>
+              <h1 className="text-xl font-black text-green-700 tracking-tight uppercase leading-none">CaravanaTrack</h1>
+              <p className="text-[9px] font-bold text-gray-400 uppercase tracking-widest mt-1">Gestión Ganadera Pro</p>
+            </div>
+          </div>
+          <div className="flex flex-col items-end gap-1">
+            <div className="flex items-center gap-2">
+              <span className={`w-2.5 h-2.5 rounded-full ${
+                connectionStatus === 'connected' ? 'bg-green-500 animate-pulse' : 
+                connectionStatus === 'connecting' ? 'bg-yellow-500 animate-pulse' : 'bg-gray-300'
+              }`} />
+              <span className="text-[10px] font-black text-gray-600 uppercase tracking-tighter">
+                {connectionStatus === 'connected' ? 'VINCULADO' : 
+                 connectionStatus === 'connecting' ? 'BUSCANDO' : 'DESCONECTADO'}
+              </span>
+            </div>
+          </div>
+        </div>
+        
+        <button 
+          id="connect-btn"
+          onClick={handleConnectionToggle}
+          disabled={connectionStatus === 'connecting'}
+          className={`w-full flex items-center justify-center gap-2 py-3.5 rounded-xl text-sm font-black transition-all action-button uppercase tracking-tight ${
+            connectionStatus === 'connected' 
+              ? 'bg-red-50 text-red-600 border-2 border-red-100 shadow-sm' 
+              : connectionStatus === 'connecting'
+              ? 'bg-gray-100 text-gray-400 border-2 border-gray-200 cursor-not-allowed'
+              : 'bg-green-700 text-white shadow-lg shadow-green-700/20'
+          }`}
+        >
+          {connectionStatus === 'connected' ? <BluetoothOff size={18} strokeWidth={3} /> : <Bluetooth size={18} strokeWidth={3} />}
+          {connectionStatus === 'connected' ? 'DESVINCULAR EQUIPO' : connectionStatus === 'connecting' ? 'VINCULANDO...' : 'VINCULAR BASTÓN RFID'}
+        </button>
+      </header>
+
+      {/* Main Content Area */}
+      <main className="flex-1 overflow-y-auto pb-24">
+        {activeTab === 'reading' ? (
+          <div className="p-4 space-y-4">
+            {/* Reading Interface */}
+            {!currentReading ? (
+              <motion.div 
+                initial={{ opacity: 0, y: 10 }}
+                animate={{ opacity: 1, y: 0 }}
+                className="flex flex-col items-center justify-center h-[50vh] text-center"
+              >
+                <div className="w-20 h-20 bg-gray-100 rounded-full flex items-center justify-center mb-4 border-2 border-dashed border-gray-300">
+                  <Scan className="text-gray-400" size={
