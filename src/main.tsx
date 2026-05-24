@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { 
   Bluetooth, 
   BluetoothOff, 
@@ -60,26 +60,26 @@ const sanitizeForCSV = (text: string): string => {
   return clean.replace(/"/g, '""');
 };
 
-const generateMockReading = (tagPrefix: string): AnimalReading => {
+// Generador de datos complementarios cuando el bastón solo manda el número de chip
+const buildReadingFromBastonCode = (rawCode: string): AnimalReading => {
   const categories: Category[] = ['Vaca', 'Vaquillona', 'Novillo', 'Toro', 'Ternero'];
   const breeds = ['Angus', 'Hereford', 'Brangus', 'Braford', 'Criollo'];
   const status = ['Vacía', 'Preñada (4 meses)', 'Preñada (6 meses)', 'En celo', 'N/A'];
   
   const id = window.crypto?.randomUUID ? window.crypto.randomUUID() : Math.random().toString(36).substring(2, 15);
-  const tagNumber = `${tagPrefix}-${Math.floor(1000 + Math.random() * 9000)}`;
   
   return {
     id,
     timestamp: new Date(),
-    tagNumber,
-    rfidCode: `RFID-${Math.random().toString(16).toUpperCase().substring(2, 10)}`,
+    tagNumber: rawCode.toUpperCase(),
+    rfidCode: `RFID-${rawCode.toUpperCase()}`,
     breed: breeds[Math.floor(Math.random() * breeds.length)],
     category: categories[Math.floor(Math.random() * categories.length)],
     age: `${Math.floor(1 + Math.random() * 8)} años`,
     reproductionStatus: status[Math.floor(Math.random() * status.length)],
-    bodyCondition: Math.floor(1 + Math.random() * 5),
-    weight: Math.floor(150 + Math.random() * 500),
-    alerts: Math.random() > 0.7 ? ['Requiere vacunación aftosa', 'Tratamiento activo garrapaticida'] : []
+    bodyCondition: Math.floor(3 + Math.random() * 2), // Condición base estándar
+    weight: Math.floor(280 + Math.random() * 350),
+    alerts: []
   };
 };
 
@@ -90,6 +90,43 @@ export default function App() {
   const [history, setHistory] = useState<AnimalReading[]>([]);
   const [isNoteModalOpen, setIsNoteModalOpen] = useState(false);
   const [noteText, setNoteText] = useState('');
+
+  // =========================================================
+  // OPCIÓN 1: ESCUCHADOR DEL BASTÓN BLUETOOTH (MODO TECLADO)
+  // =========================================================
+  useEffect(() => {
+    let bufferCodigo = '';
+
+    const manejarEntradaTeclado = (evento: KeyboardEvent) => {
+      // Solo escuchamos si simulamos estar conectados en la app
+      if (connectionStatus !== 'connected') return;
+
+      // Si el bastón manda "Enter", significa que terminó de transmitir el chip
+      if (evento.key === 'Enter') {
+        const codigoFinal = bufferCodigo.trim();
+        if (codigoFinal.length > 0) {
+          // Genera la ficha con el número que leyó el bastón físico
+          const nuevaLectura = buildReadingFromBastonCode(codigoFinal);
+          setCurrentReading(nuevaLectura);
+        }
+        bufferCodigo = ''; // Limpiamos para el próximo animal
+      } else {
+        // Vamos acumulando los caracteres que escribe el bastón (ej: "12345...")
+        if (evento.key.length === 1) {
+          bufferCodigo += evento.key;
+        }
+      }
+    };
+
+    // Enganchar el detector al navegador
+    window.addEventListener('keydown', manejarEntradaTeclado);
+    
+    // Desenganchar al cerrar o recargar
+    return () => {
+      window.removeEventListener('keydown', manejarEntradaTeclado);
+    };
+  }, [connectionStatus]); // Se reinicia si cambia la conexión
+  // =========================================================
 
   const addNote = () => {
     const trimmed = noteText.trim();
@@ -119,13 +156,15 @@ export default function App() {
       setConnectionStatus('connecting');
       setTimeout(() => {
         setConnectionStatus('connected');
-      }, 1500);
+      }, 1000);
     }
   };
 
+  // Simulación manual por si no hay bastón a mano
   const simulateScan = () => {
     if (connectionStatus !== 'connected') return;
-    const newReading = generateMockReading('AR');
+    const numeroSimulado = `AR-${Math.floor(1000 + Math.random() * 9000)}`;
+    const newReading = buildReadingFromBastonCode(numeroSimulado);
     setCurrentReading(newReading);
   };
 
@@ -148,7 +187,6 @@ export default function App() {
     if (history.length === 0) return;
     
     const doc = new jsPDF();
-    
     doc.setFontSize(22);
     doc.setTextColor(46, 125, 50); 
     doc.text('CaravanaTrack Report', 14, 22);
@@ -184,7 +222,6 @@ export default function App() {
     if (history.length === 0) return;
     
     const headers = ['ID', 'Timestamp', 'Tag', 'RFID', 'Breed', 'Category', 'Age', 'Reproduction', 'BCS', 'Weight', 'Alerts'];
-    
     const rows = history.map((a: any) => [
       sanitizeForCSV(a.id),
       sanitizeForCSV(a.timestamp.toISOString()),
@@ -200,7 +237,6 @@ export default function App() {
     ]);
 
     const csvContent = [headers, ...rows].map(e => e.map(cell => `"${cell}"`).join(",")).join("\n");
-    
     const blob = new Blob(["\uFEFF" + csvContent], { type: 'text/csv;charset=utf-8;' });
     const link = document.createElement("a");
     const url = URL.createObjectURL(blob);
@@ -264,14 +300,14 @@ export default function App() {
                   <Scan className="text-gray-400" size={32} />
                 </div>
                 <h3 className="text-lg font-bold text-gray-800">Esperando Lectura</h3>
-                <p className="text-sm text-gray-500 px-8">Escanee una caravana electrónica con el bastón para comenzar la gestión.</p>
+                <p className="text-sm text-gray-500 px-8">Active la vinculación arriba y escanee una caravana electrónica con el bastón físico.</p>
                 
                 {connectionStatus === 'connected' && (
                   <button 
                     onClick={simulateScan}
                     className="mt-6 px-4 py-2 bg-gray-200 text-gray-700 rounded-lg text-xs font-bold uppercase tracking-widest hover:bg-gray-300 transition-colors"
                   >
-                    Simular Lectura de Bastón
+                    Simular con Botón
                   </button>
                 )}
               </div>
@@ -290,7 +326,7 @@ export default function App() {
                     
                     <div className="mb-6">
                       <p className="text-[10px] font-bold text-gray-400 uppercase tracking-widest mb-1">Número de Caravana</p>
-                      <h2 className="text-5xl font-black text-green-700 tracking-tighter">
+                      <h2 className="text-4xl font-black text-green-700 tracking-tighter breakdown-all">
                         {currentReading.tagNumber}
                       </h2>
                       <p className="text-xs font-mono text-gray-400 mt-1">{currentReading.rfidCode}</p>
@@ -430,7 +466,7 @@ export default function App() {
                         <Activity className="text-green-700" size={24} />
                       </div>
                       <div>
-                        <h4 className="font-black text-gray-800 tracking-tight text-lg leading-tight">{a.tagNumber}</h4>
+                        <h4 className="font-black text-gray-800 tracking-tight text-lg leading-tight break-all">{a.tagNumber}</h4>
                         <div className="flex items-center gap-2">
                           <span className="text-[9px] font-black bg-gray-100 text-gray-500 px-1.5 py-0.5 rounded-md uppercase tracking-widest">
                             {a.category}
